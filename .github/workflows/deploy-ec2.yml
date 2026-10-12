@@ -1,0 +1,34 @@
+
+name: Deploy to EC2
+
+on:
+  workflow_run:
+    workflows: ["Build and Publish Docker Image"]
+    types:
+      - completed
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy website to EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          fingerprint: SHA256:7DZiHd4g6bzu8n9C7yAhMTvHUw9weVpKxJuvnZiniZw
+          script: |
+            docker pull hashimmazharr/netflix-site:latest
+            docker stop netflix-site-v1 || true
+            docker rm netflix-site-v1 || true
+            docker run -d --name netflix-site-v1 --restart unless-stopped -p 8081:80 hashimmazharr/netflix-site:latest
