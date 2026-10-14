@@ -1,4 +1,3 @@
-
 name: Deploy to EC2
 
 on:
@@ -37,7 +36,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["docker pull hashimmazharr/netflix-site:latest","docker stop netflix-site-v1 || true","docker rm netflix-site-v1 || true","docker run -d --name netflix-site-v1 --restart unless-stopped -p 8081:80 hashimmazharr/netflix-site:latest"]' \
+            --parameters 'commands=["sudo docker pull hashimmazharr/netflix-site:latest","sudo docker stop netflix-site-v1 || true","sudo docker rm netflix-site-v1 || true","sudo docker run -d --name netflix-site-v1 --restart unless-stopped -p 8081:80 hashimmazharr/netflix-site:latest"]' \
             --query "Command.CommandId" \
             --output text)
 
