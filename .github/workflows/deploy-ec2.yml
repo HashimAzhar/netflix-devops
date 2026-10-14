@@ -1,3 +1,4 @@
+
 name: Deploy to EC2
 
 on:
@@ -20,6 +21,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Diagnose OIDC claims
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const payload = token.split('.')[1];
+            const claims = JSON.parse(
+              Buffer.from(payload, 'base64url').toString()
+            );
+            core.info(JSON.stringify({
+              iss: claims.iss,
+              aud: claims.aud,
+              sub: claims.sub,
+              repository: claims.repository,
+              ref: claims.ref,
+              event_name: claims.event_name
+            }, null, 2));
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -33,28 +52,56 @@ jobs:
 
           INSTANCE_ID="i-0dc07d6a55eb941e8"
 
+          cat > /tmp/netflix-deploy-commands.json <<'EOF'
+          {
+            "commands": [
+              "docker pull hashimmazharr/netflix-site:latest",
+              "docker stop netflix-site-v1 || true",
+              "docker rm netflix-site-v1 || true",
+              "docker run -d --name netflix-site-v1 --restart unless-stopped -p 8081:80 hashimmazharr/netflix-site:latest"
+            ]
+          }
+          EOF
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["sudo docker pull hashimmazharr/netflix-site:latest","sudo docker stop netflix-site-v1 || true","sudo docker rm netflix-site-v1 || true","sudo docker run -d --name netflix-site-v1 --restart unless-stopped -p 8081:80 hashimmazharr/netflix-site:latest"]' \
+            --parameters file:///tmp/netflix-deploy-commands.json \
             --query "Command.CommandId" \
             --output text)
 
           echo "SSM command ID: $COMMAND_ID"
 
-          if ! aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID"; then
-            aws ssm get-command-invocation \
+          for attempt in $(seq 1 40); do
+            STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$INSTANCE_ID" \
-              --query '{Status:Status,Error:StandardErrorContent,Output:StandardOutputContent}' \
-              --output json
-            exit 1
-          fi
+              --query "Status" \
+              --output text 2>/dev/null || true)
 
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query '{Status:Status,Output:StandardOutputContent}' \
-            --output json
+            echo "Deployment status: $STATUS"
+
+            case "$STATUS" in
+              Success)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query '{Status:Status,Output:StandardOutputContent}' \
+                  --output json
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query '{Status:Status,Error:StandardErrorContent,Output:StandardOutputContent}' \
+                  --output json
+                exit 1
+                ;;
+            esac
+
+            sleep 3
+          done
+
+          echo "Timed out waiting for the SSM command."
+          exit 1
